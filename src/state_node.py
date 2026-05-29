@@ -109,19 +109,28 @@ def get_node_matrix(tpm: np.ndarray, n: int, var_idx: int) -> np.ndarray:
 def tensor_product_tpm(
     tpm_full: np.ndarray,
     n: int,
-    vars_s1: list[int],
-    vars_s2: list[int],
+    s1_t: list[int],
+    s1_t1: list[int],
+    s2_t: list[int],
+    s2_t1: list[int],
 ) -> np.ndarray:
     """
     Calcula la TPM reconstruida para la bipartición {S1, S2} usando producto tensorial.
-    Cada parte se marginaliza independientemente y luego se combinan con ⊗.
+    Soporta biparticiones donde las variables en t y en t+1 pueden ser distintas
+    dentro de cada parte (espacio completo 2^(2n-1)-1 de biparticiones).
+
+    La reconstrucción es:
+        P_rec(j | i) = P_S1(proj_s1_t1(j) | proj_s1_t(i))
+                     * P_S2(proj_s2_t1(j) | proj_s2_t(i))
 
     Parámetros
     ----------
-    tpm_full : TPM del subsistema completo (2^n, 2^n)
+    tpm_full : TPM del subsistema (2^n, 2^n)
     n        : número de variables del subsistema
-    vars_s1  : índices (0-based, relativos al subsistema) de las variables en S1
-    vars_s2  : índices (0-based, relativos al subsistema) de las variables en S2
+    s1_t     : índices de variables en t asignadas a S1
+    s1_t1    : índices de variables en t+1 asignadas a S1
+    s2_t     : índices de variables en t asignadas a S2
+    s2_t1    : índices de variables en t+1 asignadas a S2
 
     Retorna
     -------
@@ -129,50 +138,28 @@ def tensor_product_tpm(
     """
     from marginalization import marginalize_rows, marginalize_columns
 
-    # --- Parte S1 ---
-    # Marginalizar filas: mantener solo vars_s1 en t
-    tpm_s1 = marginalize_rows(tpm_full, n, vars_s1)
-    # Marginalizar columnas: mantener solo vars_s1 en t+1
-    tpm_s1 = marginalize_columns(tpm_s1, n, vars_s1)
-    n_s1 = len(vars_s1)
+    # P(s1_t1 | s1_t) — si s1_t vacío, promedia todas las filas (marginal)
+    tpm_s1 = marginalize_rows(tpm_full, n, s1_t)
+    tpm_s1 = marginalize_columns(tpm_s1, n, s1_t1)
 
-    # --- Parte S2 ---
-    tpm_s2 = marginalize_rows(tpm_full, n, vars_s2)
-    tpm_s2 = marginalize_columns(tpm_s2, n, vars_s2)
-    n_s2 = len(vars_s2)
+    # P(s2_t1 | s2_t)
+    tpm_s2 = marginalize_rows(tpm_full, n, s2_t)
+    tpm_s2 = marginalize_columns(tpm_s2, n, s2_t1)
 
-    # --- Reconstrucción con producto tensorial por fila ---
-    # Necesitamos alinear el orden de variables al del sistema completo.
-    # Para cada fila (estado en t del subsistema completo), el vector t+1
-    # es kron(row_S1, row_S2) reordenado según el orden original de variables.
-    num_states_full = 2 ** n
-    tpm_reconstructed = np.zeros((num_states_full, num_states_full), dtype=float)
+    num_states = 2 ** n
+    tpm_reconstructed = np.zeros((num_states, num_states), dtype=float)
 
-    for row_full in range(num_states_full):
+    for row_full in range(num_states):
         full_state = index_to_state(row_full, n)
-        # Proyectar al espacio de S1 y S2
-        state_s1 = [full_state[v] for v in vars_s1]
-        state_s2 = [full_state[v] for v in vars_s2]
-        row_s1 = state_to_index(state_s1)
-        row_s2 = state_to_index(state_s2)
+        row_s1 = state_to_index([full_state[v] for v in s1_t])
+        row_s2 = state_to_index([full_state[v] for v in s2_t])
 
-        # Distribuciones en t+1 para cada parte
-        dist_s1 = tpm_s1[row_s1, :]  # (2^n_s1,)
-        dist_s2 = tpm_s2[row_s2, :]  # (2^n_s2,)
-
-        # Producto tensorial de las distribuciones marginales
-        # Genera una distribución sobre los estados (S1, S2) en t+1
-        joint = np.kron(dist_s1, dist_s2)  # (2^n,) con orden (s1_0, s2_0), (s1_0, s2_1)...
-
-        # Reordenar columnas para alinear con el orden original de variables
-        for col_full in range(num_states_full):
-            full_col_state = index_to_state(col_full, n)
-            col_s1_state = [full_col_state[v] for v in vars_s1]
-            col_s2_state = [full_col_state[v] for v in vars_s2]
-            col_s1_idx = state_to_index(col_s1_state)
-            col_s2_idx = state_to_index(col_s2_state)
-            # En el kron: índice = col_s1_idx * 2^n_s2 + col_s2_idx
-            kron_idx = col_s1_idx * (2 ** n_s2) + col_s2_idx
-            tpm_reconstructed[row_full, col_full] = joint[kron_idx]
+        for col_full in range(num_states):
+            full_col = index_to_state(col_full, n)
+            col_s1 = state_to_index([full_col[v] for v in s1_t1])
+            col_s2 = state_to_index([full_col[v] for v in s2_t1])
+            tpm_reconstructed[row_full, col_full] = (
+                tpm_s1[row_s1, col_s1] * tpm_s2[row_s2, col_s2]
+            )
 
     return tpm_reconstructed

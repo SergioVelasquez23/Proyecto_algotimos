@@ -58,59 +58,49 @@ def compute_cost_table(
     n: int,
 ) -> np.ndarray:
     """
-    Calcula la tabla de costos T usando BFS modificado según el Algoritmo 1
-    del documento (sección 3.1.2).
+    Calcula la tabla de costos T según la ecuación 3.1 del GeoMIP:
 
-    t(i, j) = γ · |X[i] - X[j]| + Σ_{k ∈ N(i,j)} γ · t(i, k)
-    γ = 2^(-d_H(i,j))
+        t(i, j) = γ · ( |X[i] − X[j]| + Σ_{k ∈ N_opt(i,j)} t(i, k) )
+        γ = 2^(−d_H(i,j))
+
+    donde N_opt(i,j) son los vecinos inmediatos de i en caminos óptimos
+    hacia j (nodos a distancia d−1 de j).
+
+    El cálculo es bottom-up: primero d=1, luego d=2, …, d=n,
+    garantizando que t(i,k) esté disponible al calcular t(i,j).
 
     Parámetros
     ----------
     node_probs : array de forma (2^n,) con el valor X[v] de cada vértice.
-                 Típicamente la probabilidad condicional P(Xi_t+1=1 | estado_t).
+                 Típicamente P(Xi_t+1=1 | estado_t).
     n          : dimensión del hipercubo (número de variables)
 
     Retorna
     -------
     T : np.ndarray de forma (2^n, 2^n)
-        T[i, j] = costo de transición desde estado i hacia estado j
     """
     num_states = 2 ** n
     T = np.zeros((num_states, num_states), dtype=float)
     adj = build_hypercube_adjacency(n)
 
     for i in range(num_states):
-        for j in range(num_states):
-            d = hamming_distance(i, j, n)
+        # d=1: vecinos directos — sin suma recursiva
+        for j in adj[i]:
+            T[i, j] = 0.5 * abs(node_probs[i] - node_probs[j])
+
+        # d=2..n: acumular desde estados ya calculados a menor distancia
+        for d in range(2, n + 1):
             gamma = 2.0 ** (-d)
-
-            # Contribución directa: diferencia de valores entre i y j
-            T[i, j] = gamma * abs(node_probs[i] - node_probs[j])
-
-            if d > 1:
-                # BFS desde i hacia j, acumulando contribuciones por nivel
-                queue = deque([i])
-                visited = {i}
-                level = 0
-
-                while level < d and queue:
-                    level += 1
-                    next_queue = deque()
-
-                    while queue:
-                        u = queue.popleft()
-                        d_u_j = hamming_distance(u, j, n)
-
-                        for v in adj[u]:
-                            d_v_j = hamming_distance(v, j, n)
-                            # Solo avanzar hacia j (distancia decreciente)
-                            if d_v_j < d_u_j and v not in visited:
-                                gamma_step = 2.0 ** (-hamming_distance(i, v, n))
-                                T[i, j] += gamma_step * (T[i, j] + T[i, v])
-                                visited.add(v)
-                                next_queue.append(v)
-
-                    queue = next_queue
+            for j in range(num_states):
+                if hamming_distance(i, j, n) != d:
+                    continue
+                # Vecinos de i que están un paso más cerca de j
+                neighbors_toward = [
+                    k for k in adj[i]
+                    if hamming_distance(k, j, n) == d - 1
+                ]
+                neighbor_sum = sum(T[i, k] for k in neighbors_toward)
+                T[i, j] = gamma * (abs(node_probs[i] - node_probs[j]) + neighbor_sum)
 
     return T
 

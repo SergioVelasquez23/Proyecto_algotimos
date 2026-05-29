@@ -25,6 +25,8 @@ from marginalization import get_candidate_tpm
 from state_node import state_state_to_state_node
 from hypercube import compute_cost_table_from_tpm, hamming_distance
 from bipartition import find_optimal_bipartition
+from kpartition import find_optimal_kpartition, find_optimal_partition_any_k, count_kpartitions, bell_number
+from geometric import find_optimal_kpartition_geometric, find_optimal_kpartition_geometric_any_k
 
 
 # ─────────────────────────────────────────────────────────────
@@ -40,6 +42,8 @@ st.set_page_config(
 st.title("🔷 Análisis de Bipartición Óptima")
 st.caption("Sistemas causales binarios · Análisis y Diseño de Algoritmos 2025C")
 
+
+_COL_OPTIMA = "Óptima"
 
 # ─────────────────────────────────────────────────────────────
 # Helpers
@@ -241,7 +245,7 @@ with st.sidebar:
         )
 
     st.divider()
-    run_btn = st.button("▶ Ejecutar análisis", type="primary", use_container_width=True)
+    run_btn = st.button("▶ Ejecutar análisis", type="primary", width='stretch')
 
 
 # ─────────────────────────────────────────────────────────────
@@ -311,9 +315,9 @@ if run_btn or demo_mode:
         with st.expander("Ver TPM completa", expanded=False):
             st.plotly_chart(
                 plot_tpm_heatmap(tpm_full, n, "TPM original (estado-estado)"),
-                use_container_width=True,
+                width='stretch',
             )
-            st.dataframe(tpm_to_df(tpm_full, n, variable_names), use_container_width=True)
+            st.dataframe(tpm_to_df(tpm_full, n, variable_names), width='stretch')
 
         # ──────────────────────────────────────────────────
         # PASO 2: Condicionamiento
@@ -355,14 +359,14 @@ if run_btn or demo_mode:
         with col1:
             st.plotly_chart(
                 plot_tpm_heatmap(candidate_tpm, n_c, f"TPM candidata {candidate_vars}"),
-                use_container_width=True,
+                width='stretch',
             )
         with col2:
             st.dataframe(
                 tpm_to_df(candidate_tpm, n_c, candidate_vars)
                 .style.background_gradient(cmap="Blues", vmin=0, vmax=1)
                 .format("{:.3f}"),
-                use_container_width=True,
+                width='stretch',
             )
 
         # ──────────────────────────────────────────────────
@@ -381,7 +385,7 @@ if run_btn or demo_mode:
                     st.dataframe(
                         df_node.style.background_gradient(cmap="RdYlGn", vmin=0, vmax=1)
                         .format("{:.3f}"),
-                        use_container_width=True,
+                        width='stretch',
                     )
                 with col2:
                     probs = node_matrices[i][:, 1]
@@ -398,7 +402,7 @@ if run_btn or demo_mode:
                         range_color=[0, 1],
                     )
                     fig_bar.update_layout(height=300, showlegend=False)
-                    st.plotly_chart(fig_bar, use_container_width=True)
+                    st.plotly_chart(fig_bar, width='stretch')
 
         # ──────────────────────────────────────────────────
         # PASO 5: Hipercubo + Tabla T
@@ -416,14 +420,14 @@ if run_btn or demo_mode:
                 with col1:
                     st.plotly_chart(
                         plot_cost_table(T, n_c, var),
-                        use_container_width=True,
+                        width='stretch',
                     )
                 with col2:
                     # Hipercubo 3D solo para n=3
                     if n_c == 3:
                         fig_cube = plot_hypercube_3d(n_c, node_matrices[i][:, 1], var)
                         if fig_cube:
-                            st.plotly_chart(fig_cube, use_container_width=True)
+                            st.plotly_chart(fig_cube, width='stretch')
                     else:
                         st.info(
                             f"Visualización 3D disponible solo para n=3. "
@@ -460,54 +464,179 @@ if run_btn or demo_mode:
             color_continuous_scale="Blues",
         )
         fig_dist.update_layout(height=300, showlegend=False)
-        st.plotly_chart(fig_dist, use_container_width=True)
+        st.plotly_chart(fig_dist, width='stretch')
 
         # ──────────────────────────────────────────────────
         # PASO 7: Biparticiones + EMD
         # ──────────────────────────────────────────────────
-        st.header("⚖️ Paso 7 — Biparticiones y discrepancia δ")
+        st.header("⚖️ Paso 7 — Particiones y discrepancia δ")
 
-        n_possible = 2 ** (n_c - 1) - 1
-        st.write(f"Número de biparticiones a evaluar: **{n_possible}**")
+        tab_bip, tab_kpart, tab_geo = st.tabs([
+            "🔁 Biparticiones (fuerza bruta)",
+            "🔀 K-Particiones (fuerza bruta)",
+            "🌐 Solución Geométrica (GeoMIP)",
+        ])
 
-        with st.spinner("Calculando δ para cada bipartición..."):
-            result = find_optimal_bipartition(
-                candidate_tpm,
-                n_c,
-                initial_idx,
-                variable_names=candidate_vars,
-                verbose=False,
+        MAX_PART = 2000
+
+        # ──────────────────────────────────────────────────
+        # TAB 1: Biparticiones (fuerza bruta, k=2)
+        # ──────────────────────────────────────────────────
+        with tab_bip:
+            n_possible_full = 2 ** (2 * n_c - 1) - 1
+            st.write(
+                f"Espacio completo (t + t+1): **{n_possible_full}** biparticiones "
+                f"— límite de seguridad: **{MAX_PART}**"
+            )
+            if n_possible_full > MAX_PART:
+                st.warning(
+                    f"{n_c} variables → {n_possible_full:,} biparticiones. "
+                    f"Se evaluarán las primeras {MAX_PART}."
+                )
+
+            with st.spinner("Calculando δ para cada bipartición..."):
+                result = find_optimal_bipartition(
+                    candidate_tpm, n_c, initial_idx,
+                    variable_names=candidate_vars,
+                    verbose=False, max_bipartitions=MAX_PART,
+                )
+
+            if result.get("truncated"):
+                st.info(f"⚠️ Truncado en {result['n_evaluated']} biparticiones.")
+
+            st.plotly_chart(
+                plot_bipartitions_bar(result["all_bipartitions"], result["optimal_s1"]),
+                width='stretch',
+            )
+            df_bip = pd.DataFrame([
+                {"S1": ", ".join(s1), "S2": ", ".join(s2),
+                 "δ (EMD)": round(delta, 6),
+                 _COL_OPTIMA: "✅" if s1 == result["optimal_s1"] else ""}
+                for s1, s2, delta in sorted(result["all_bipartitions"], key=lambda x: x[2])
+            ])
+            st.dataframe(df_bip, width='stretch', hide_index=True)
+
+            col1, col2, col3 = st.columns(3)
+            col1.success(f"**S1** = `{', '.join(result['optimal_s1'])}`")
+            col2.error(f"**S2** = `{', '.join(result['optimal_s2'])}`")
+            col3.metric("δ mínimo", f"{result['min_delta']:.6f}")
+
+        # ──────────────────────────────────────────────────
+        # TAB 2: K-Particiones (fuerza bruta)
+        # ──────────────────────────────────────────────────
+        with tab_kpart:
+            m = 2 * n_c
+            b = bell_number(m)
+            st.write(
+                f"Número de Bell B({m}) = **{b:,}** particiones totales "
+                f"(todas las k). Límite de seguridad: **{MAX_PART}**"
             )
 
-        # Gráfica de barras
-        st.plotly_chart(
-            plot_bipartitions_bar(result["all_bipartitions"], result["optimal_s1"]),
-            use_container_width=True,
-        )
+            # Tabla de conteo por k
+            count_rows = []
+            for kk in range(2, n_c + 1):
+                s_mk = count_kpartitions(m, kk)
+                count_rows.append({"k": kk, "S(2n,k)": f"{s_mk:,}",
+                                    "Evaluable": "✅" if s_mk <= MAX_PART else "⚠️ truncado"})
+            st.dataframe(pd.DataFrame(count_rows), width='stretch', hide_index=True)
 
-        # Tabla de resultados
-        df_bip = pd.DataFrame(
-            [
-                {
-                    "S1": str(s1),
-                    "S2": str(s2),
-                    "δ (EMD)": round(delta, 6),
-                    "Óptima": "✅" if s1 == result["optimal_s1"] else "",
-                }
-                for s1, s2, delta in sorted(result["all_bipartitions"], key=lambda x: x[2])
-            ]
-        )
-        st.dataframe(df_bip, use_container_width=True, hide_index=True)
+            k_sel = st.selectbox(
+                "Número de partes k:", options=list(range(2, n_c + 1)), index=0,
+                key="k_select"
+            )
+            buscar_todos_k = st.checkbox("Buscar la k óptima (todas las k)", value=False)
+
+            if st.button("▶ Ejecutar k-partición", key="run_kpart"):
+                with st.spinner(f"Calculando k={k_sel}-partición..."):
+                    if buscar_todos_k:
+                        kresult = find_optimal_partition_any_k(
+                            candidate_tpm, n_c, initial_idx,
+                            variable_names=candidate_vars,
+                            max_partitions_total=MAX_PART,
+                        )
+                        st.success(f"Mejor k = **{kresult['best_k']}** con δ = **{kresult['overall_min_delta']:.6f}**")
+                        for kk, kr in kresult["results_by_k"].items():
+                            with st.expander(f"k={kk}  →  δ = {kr['min_delta']:.6f}"):
+                                st.write("**Partición óptima:**", " | ".join(kr["optimal_partition"]))
+                                df_kr = pd.DataFrame([
+                                    {"Partición": " | ".join(lbl), "δ": round(d, 6)}
+                                    for lbl, d in sorted(kr["all_partitions"], key=lambda x: x[1])
+                                ])
+                                st.dataframe(df_kr, width='stretch', hide_index=True)
+                    else:
+                        kresult = find_optimal_kpartition(
+                            candidate_tpm, n_c, k_sel, initial_idx,
+                            variable_names=candidate_vars,
+                            max_partitions=MAX_PART,
+                        )
+                        if kresult.get("truncated"):
+                            st.info(f"⚠️ Truncado en {kresult['n_evaluated']} particiones.")
+                        st.success(f"Óptima: **{' | '.join(kresult['optimal_partition'])}** con δ = **{kresult['min_delta']:.6f}**")
+                        df_kr = pd.DataFrame([
+                            {"Partición": " | ".join(lbl), "δ": round(d, 6),
+                             _COL_OPTIMA: "✅" if lbl == kresult["optimal_partition"] else ""}
+                            for lbl, d in sorted(kresult["all_partitions"], key=lambda x: x[1])
+                        ])
+                        st.dataframe(df_kr, width='stretch', hide_index=True)
 
         # ──────────────────────────────────────────────────
-        # RESULTADO FINAL
+        # TAB 3: Solución geométrica (GeoMIP Algorithm 2)
+        # ──────────────────────────────────────────────────
+        with tab_geo:
+            st.write(
+                "Usa la tabla de costos **T** para identificar candidatos directamente "
+                "sin evaluar todo el espacio. Complejidad O(n·2ⁿ) vs O(2^(2n-1)) exhaustivo."
+            )
+            k_geo = st.selectbox(
+                "Número de partes k:", options=list(range(2, n_c + 1)), index=0,
+                key="k_geo_select"
+            )
+            buscar_todos_k_geo = st.checkbox("Buscar la k óptima (todas las k)", value=False, key="geo_all_k")
+
+            if st.button("▶ Ejecutar solución geométrica", key="run_geo"):
+                with st.spinner("Aplicando algoritmo geométrico (GeoMIP)..."):
+                    if buscar_todos_k_geo:
+                        geo_result = find_optimal_kpartition_geometric_any_k(
+                            candidate_tpm, n_c, initial_idx,
+                            variable_names=candidate_vars,
+                        )
+                        st.success(
+                            f"Mejor k = **{geo_result['best_k']}** con δ = **{geo_result['overall_min_delta']:.6f}**"
+                        )
+                        for kk, kr in geo_result["results_by_k"].items():
+                            with st.expander(f"k={kk}  →  δ = {kr['min_delta']:.6f}  ({kr['n_candidates']} candidatos)"):
+                                st.write("**Partición óptima:**", " | ".join(kr["optimal_partition"]))
+                                df_geo = pd.DataFrame([
+                                    {"Candidato": " | ".join(lbl), "δ": round(d, 6)}
+                                    for lbl, d in sorted(kr["all_evaluated"], key=lambda x: x[1])
+                                ])
+                                st.dataframe(df_geo, width='stretch', hide_index=True)
+                    else:
+                        geo_result = find_optimal_kpartition_geometric(
+                            candidate_tpm, n_c, k_geo, initial_idx,
+                            variable_names=candidate_vars,
+                        )
+                        st.info(f"{geo_result['n_candidates']} candidatos evaluados (método geométrico)")
+                        st.success(
+                            f"Óptima: **{' | '.join(geo_result['optimal_partition'])}** "
+                            f"con δ = **{geo_result['min_delta']:.6f}**"
+                        )
+                        df_geo = pd.DataFrame([
+                            {"Candidato": " | ".join(lbl), "δ": round(d, 6),
+                             _COL_OPTIMA: "✅" if lbl == geo_result["optimal_partition"] else ""}
+                            for lbl, d in sorted(geo_result["all_evaluated"], key=lambda x: x[1])
+                        ])
+                        st.dataframe(df_geo, width='stretch', hide_index=True)
+
+        # ──────────────────────────────────────────────────
+        # RESULTADO FINAL (bipartición de referencia)
         # ──────────────────────────────────────────────────
         st.divider()
-        st.header("🏆 Resultado: Bipartición Óptima")
+        st.header("🏆 Resultado: Bipartición Óptima (k=2)")
 
         col1, col2, col3 = st.columns(3)
-        col1.success(f"**S1** = `{result['optimal_s1']}`")
-        col2.error(f"**S2** = `{result['optimal_s2']}`")
+        col1.success(f"**S1** = `{', '.join(result['optimal_s1'])}`")
+        col2.error(f"**S2** = `{', '.join(result['optimal_s2'])}`")
         col3.metric("δ mínimo", f"{result['min_delta']:.6f}")
 
         st.balloons()

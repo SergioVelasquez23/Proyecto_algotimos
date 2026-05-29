@@ -73,7 +73,6 @@ def build_bipartition_variables(n: int) -> list[tuple[str, str]]:
 def split_bipartition(
     s1: tuple,
     s2: tuple,
-    n: int,
 ) -> tuple[list[int], list[int], list[int], list[int]]:
     """
     Separa una bipartición en sus componentes de t y t+1 para cada parte.
@@ -82,10 +81,10 @@ def split_bipartition(
     -------
     s1_t, s1_t1, s2_t, s2_t1 : listas de índices de variables en cada combinación
     """
-    s1_t = sorted([v for v, tiempo in s1 if tiempo == 't'])
-    s1_t1 = sorted([v for v, tiempo in s1 if tiempo == 't+1'])
-    s2_t = sorted([v for v, tiempo in s2 if tiempo == 't'])
-    s2_t1 = sorted([v for v, tiempo in s2 if tiempo == 't+1'])
+    s1_t  = sorted(v for v, tiempo in s1 if tiempo == 't')
+    s1_t1 = sorted(v for v, tiempo in s1 if tiempo == 't+1')
+    s2_t  = sorted(v for v, tiempo in s2 if tiempo == 't')
+    s2_t1 = sorted(v for v, tiempo in s2 if tiempo == 't+1')
     return s1_t, s1_t1, s2_t, s2_t1
 
 
@@ -96,35 +95,45 @@ def split_bipartition(
 def evaluate_bipartition(
     tpm: np.ndarray,
     n: int,
-    vars_s1: list[int],
-    vars_s2: list[int],
+    s1_t: list[int],
+    s1_t1: list[int],
+    s2_t: list[int],
+    s2_t1: list[int],
     initial_state_idx: int,
 ) -> float:
     """
     Evalúa la discrepancia δ para una bipartición dada del subsistema.
 
-    Usa la función tensor_product_tpm para reconstruir la TPM de la bipartición
-    y luego calcula EMD con distancia Hamming.
+    Soporta biparticiones del espacio completo (t, t+1): las variables en t
+    y en t+1 de cada parte pueden ser distintas.
 
     Parámetros
     ----------
     tpm              : TPM del subsistema (2^n, 2^n)
     n                : número de variables del subsistema
-    vars_s1          : índices de variables en S1 (relativos al subsistema)
-    vars_s2          : índices de variables en S2 (relativos al subsistema)
+    s1_t             : índices de variables en t asignadas a S1
+    s1_t1            : índices de variables en t+1 asignadas a S1
+    s2_t             : índices de variables en t asignadas a S2
+    s2_t1            : índices de variables en t+1 asignadas a S2
     initial_state_idx: índice del estado inicial en t
 
     Retorna
     -------
-    delta : float, discrepancia EMD
+    delta : float, discrepancia EMD con métrica Hamming
     """
     from emd import emd, hamming_distance_matrix
+    from state_node import tensor_product_tpm
 
-    tpm_reconstructed = tensor_product_tpm(tpm, n, vars_s1, vars_s2)
+    tpm_reconstructed = tensor_product_tpm(tpm, n, s1_t, s1_t1, s2_t, s2_t1)
     D = hamming_distance_matrix(n)
     p = tpm[initial_state_idx, :]
     q = tpm_reconstructed[initial_state_idx, :]
     return emd(p, q, D)
+
+
+def _fmt_part(part: tuple, variable_names: list[str]) -> list[str]:
+    """Convierte una parte de bipartición a etiquetas legibles, ej. ['A_t', 'B_t+1']."""
+    return [f"{variable_names[v]}_{t}" for v, t in part]
 
 
 def find_optimal_bipartition(
@@ -133,76 +142,72 @@ def find_optimal_bipartition(
     initial_state_idx: int,
     variable_names: list[str] | None = None,
     verbose: bool = False,
+    max_bipartitions: int = 2000,
 ) -> dict:
     """
     Encuentra la bipartición óptima del subsistema minimizando δ.
+
+    Enumera el espacio completo de biparticiones sobre (t, t+1):
+        P = 2^(2n-1) - 1 biparticiones posibles.
+    Si supera max_bipartitions, se trunca y se advierte en 'truncated'.
 
     Parámetros
     ----------
     tpm               : TPM del subsistema (2^n, 2^n)
     n                 : número de variables del subsistema
     initial_state_idx : índice del estado inicial
-    variable_names    : nombres opcionales de las variables para el reporte
-    verbose           : si True, imprime el progreso
+    variable_names    : nombres de las variables (len = n)
+    verbose           : imprime progreso si True
+    max_bipartitions  : límite de seguridad para no congelar el sistema
 
     Retorna
     -------
-    result : dict con keys:
-        'optimal_s1'       : lista de índices de variables en S1
-        'optimal_s2'       : lista de índices de variables en S2
-        'min_delta'        : valor mínimo de δ
-        'all_bipartitions' : lista de (s1, s2, delta) para todas las biparticiones
-        'n_evaluated'      : número total de biparticiones evaluadas
+    dict con keys: optimal_s1, optimal_s2, min_delta,
+                   all_bipartitions, n_evaluated, truncated
     """
     if variable_names is None:
         variable_names = [f"X{i+1}" for i in range(n)]
 
-    all_vars = list(range(n))
-    best_s1 = None
-    best_s2 = None
+    all_var_time = build_bipartition_variables(n)   # 2n pares (var, tiempo)
+    best_s1_label: list[str] = []
+    best_s2_label: list[str] = []
     best_delta = float("inf")
-    all_results = []
+    all_results: list[tuple] = []
+    truncated = False
 
-    # Generar todas las biparticiones no triviales de las n variables
-    # Nota: aquí biparticionamos las VARIABLES del subsistema (no los tiempos)
-    # Una bipartición define qué variables van en S1 y cuáles en S2
-    for r in range(1, n):
-        for combo in combinations(all_vars, r):
-            s1 = list(combo)
-            s2 = [v for v in all_vars if v not in s1]
+    for s1, s2 in generate_bipartitions(all_var_time):
+        if len(all_results) >= max_bipartitions:
+            truncated = True
+            break
 
-            # Evitar duplicados (S1={A,B}, S2={C} es la misma que S1={C}, S2={A,B})
-            if s1[0] != 0:
-                continue
+        s1_t, s1_t1, s2_t, s2_t1 = split_bipartition(s1, s2)
 
-            try:
-                delta = evaluate_bipartition(tpm, n, s1, s2, initial_state_idx)
-            except Exception as e:
-                if verbose:
-                    print(f"  Error en bipartición {s1} | {s2}: {e}")
-                continue
-
-            s1_names = [variable_names[i] for i in s1]
-            s2_names = [variable_names[i] for i in s2]
-            all_results.append((s1_names, s2_names, delta))
-
+        try:
+            delta = evaluate_bipartition(
+                tpm, n, s1_t, s1_t1, s2_t, s2_t1, initial_state_idx
+            )
+        except Exception as exc:
             if verbose:
-                print(f"  {s1_names} | {s2_names}  →  δ = {delta:.6f}")
+                print(f"  Error {s1} | {s2}: {exc}")
+            continue
 
-            if delta < best_delta:
-                best_delta = delta
-                best_s1 = s1
-                best_s2 = s2
+        s1_label = _fmt_part(s1, variable_names)
+        s2_label = _fmt_part(s2, variable_names)
+        all_results.append((s1_label, s2_label, delta))
 
-    best_s1_names = [variable_names[i] for i in best_s1] if best_s1 is not None else []
-    best_s2_names = [variable_names[i] for i in best_s2] if best_s2 is not None else []
+        if verbose:
+            print(f"  {s1_label} | {s2_label}  →  δ = {delta:.6f}")
+
+        if delta < best_delta:
+            best_delta = delta
+            best_s1_label = s1_label
+            best_s2_label = s2_label
 
     return {
-        "optimal_s1": best_s1_names,
-        "optimal_s2": best_s2_names,
-        "optimal_s1_idx": best_s1,
-        "optimal_s2_idx": best_s2,
+        "optimal_s1": best_s1_label,
+        "optimal_s2": best_s2_label,
         "min_delta": best_delta,
         "all_bipartitions": all_results,
         "n_evaluated": len(all_results),
+        "truncated": truncated,
     }

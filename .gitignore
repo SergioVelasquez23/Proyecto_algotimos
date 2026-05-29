@@ -49,3 +49,11 @@ _tmp_*
 
 # CSV uploads
 _tmp_upload.csv
+
+# Large binaries
+*.tar.gz
+*.tar.xz
+*.zip
+
+# LibreOffice/Word lock files
+.~lock.*
